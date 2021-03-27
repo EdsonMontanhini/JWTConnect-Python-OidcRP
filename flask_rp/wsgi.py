@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 
-import logging
 import os
 import sys
 
-from oidcrp.util import create_context
+from oidcop.utils import create_context
 
 try:
     from . import application

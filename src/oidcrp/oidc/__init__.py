@@ -380,19 +380,17 @@ class RP(oauth2.Client):
 
         return {'access_token': access_token, 'id_token': id_token}
 
-    def logout(self, state, client=None, post_logout_redirect_uri=''):
+    def logout(self, state, post_logout_redirect_uri=''):
         """
         Does a RP initiated logout from an OP. After logout the user will be
         redirect by the OP to a URL of choice (post_logout_redirect_uri).
 
         :param state: Key to an active session
-        :param client: Which client to use
-        :param post_logout_redirect_uri: If a special post_logout_redirect_uri
-            should be used
-        :return: A US
+        :param post_logout_redirect_uri: If a special post_logout_redirect_uri should be used
+        :return: Request parameters
         """
         try:
-            srv = client.service['end_session']
+            srv = self.service['end_session']
         except KeyError:
             raise OidcServiceError("Does not know how to logout")
 
@@ -403,10 +401,7 @@ class RP(oauth2.Client):
         else:
             request_args = {}
 
-        resp = srv.get_request_parameters(state=state,
-                                          request_args=request_args)
-
-        return resp
+        return srv.get_request_parameters(state=state, request_args=request_args)
 
     def clear_session(self, state):
         self.service_context.state.remove_state(state)

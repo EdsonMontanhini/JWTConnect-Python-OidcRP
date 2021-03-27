@@ -144,6 +144,6 @@ webserver:
   server_key: "certs/key.pem"
   # If you want the clients cert to be verified
   # verify_user: optional
-  # The you also need
+  # Then you also need
   # ca_bundle: ''
   debug: true

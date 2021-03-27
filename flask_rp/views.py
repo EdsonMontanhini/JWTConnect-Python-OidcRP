@@ -1,7 +1,6 @@
 import logging
 from urllib.parse import parse_qs
 
-import werkzeug
 from flask import Blueprint
 from flask import current_app
 from flask import redirect
@@ -11,8 +10,9 @@ from flask import session
 from flask.helpers import make_response
 from flask.helpers import send_from_directory
 from oidcservice.exception import OidcServiceError
+import werkzeug
 
-import oidcrp
+from oidcrp import oidc
 
 logger = logging.getLogger(__name__)
 
@@ -72,37 +72,29 @@ def rp():
         return render_template('opbyuid.html', providers=_providers)
 
 
-def get_rp(op_hash):
-
+def get_client(op_hash):
     try:
-        _iss = current_app.rph.hash2issuer[op_hash]
+        _client = current_app.rph.find_client_by_issuer_url[op_hash]
     except KeyError:
-        logger.error('Unkown issuer: {} not among {}'.format(
-            op_hash, list(current_app.rph.hash2issuer.keys())))
-        return make_response("Unknown hash: {}".format(op_hash), 400)
-    else:
-        try:
-            rp = current_app.rph.issuer2rp[_iss]
-        except KeyError:
-            return make_response("Couldn't find client for {}".format(_iss),
-                                 400)
+        logger.error('Unkown issuer ID: {}'.format(op_hash))
+        return make_response("Unknown issuer ID: {}".format(op_hash), 400)
 
-    return rp
+    return _client
 
 
 def finalize(op_hash, request_args):
-    rp = get_rp(op_hash)
+    _client = get_client(op_hash)
 
-    if hasattr(rp, 'status_code') and rp.status_code != 200:
-        logger.error(rp.response[0].decode())
-        return rp.response[0], rp.status_code
+    if hasattr(_client, 'status_code') and _client.status_code != 200:
+        logger.error(_client.response[0].decode())
+        return _client.response[0], _client.status_code
 
-    session['client_id'] = rp.service_context.get('client_id')
+    session['client_id'] = _client.service_context.get('client_id')
 
     session['state'] = request_args.get('state')
 
     if session['state']:
-        iss = rp.session_interface.get_iss(session['state'])
+        iss = _client.service_context.state.get_iss(session['state'])
     else:
         return make_response('Unknown state', 400)
 
@@ -111,7 +103,7 @@ def finalize(op_hash, request_args):
     logger.debug('Issuer: {}'.format(iss))
 
     try:
-        res = current_app.rph.finalize(iss, request_args)
+        res = _client.finalize(iss, request_args)
     except OidcServiceError as excp:
         # replay attack prevention, is that code was already used before
         return excp.__str__(), 403
@@ -120,7 +112,7 @@ def finalize(op_hash, request_args):
 
     if 'userinfo' in res:
         endpoints = {}
-        for k, v in rp.service_context.get('provider_info').items():
+        for k, v in _client.service_context.get('provider_info').items():
             if k.endswith('_endpoint'):
                 endp = k.replace('_', ' ')
                 endp = endp.capitalize()
@@ -129,16 +121,16 @@ def finalize(op_hash, request_args):
         kwargs = {}
 
         # Do I support session status checking ?
-        _status_check_info = rp.service_context.add_on.get('status_check')
+        _status_check_info = _client.service_context.add_on.get('status_check')
         if _status_check_info:
             # Does the OP support session status checking ?
-            _chk_iframe = rp.service_context.get('provider_info').get('check_session_iframe')
+            _chk_iframe = _client.service_context.get('provider_info').get('check_session_iframe')
             if _chk_iframe:
                 kwargs['check_session_iframe'] = _chk_iframe
                 kwargs["status_check_iframe"] = _status_check_info['rp_iframe_path']
 
         # Where to go if the user clicks on logout
-        kwargs['logout_url'] = "{}/logout".format(rp.service_context.base_url)
+        kwargs['logout_url'] = "{}/logout".format(_client.service_context.base_url)
 
         return render_template('opresult.html', endpoints=endpoints,
                                userinfo=res['userinfo'],
@@ -175,28 +167,27 @@ def ihf_cb(self, op_hash='', **kwargs):
 def session_iframe():  # session management
     logger.debug('session_iframe request_args: {}'.format(request.args))
 
-    _rp = get_rp(session['op_hash'])
-    session_change_url = "{}/session_change".format(_rp.service_context.base_url)
+    _client = get_client(session['op_hash'])
+    session_change_url = "{}/session_change".format(_client.service_context.base_url)
 
-    _issuer = current_app.rph.hash2issuer[session['op_hash']]
     args = {
         'client_id': session['client_id'],
         'session_state': session['session_state'],
-        'issuer': _issuer,
+        'issuer': _client.service_context.issuer,
         'session_change_url': session_change_url
     }
     logger.debug('rp_iframe args: {}'.format(args))
-    _template = _rp.service_context.add_on["status_check"]["session_iframe_template_file"]
+    _template = _client.service_context.add_on["status_check"]["session_iframe_template_file"]
     return render_template(_template, **args)
 
 
 @oidc_rp_views.route('/session_change')
 def session_change():
     logger.debug('session_change: {}'.format(session['op_hash']))
-    _rp = get_rp(session['op_hash'])
+    _client = get_client(session['op_hash'])
 
     # If there is an ID token send it along as a id_token_hint
-    _aserv = _rp.service_context.service['authorization']
+    _aserv = _client.service_context.service['authorization']
     request_args = {"prompt": "none"}
 
     request_args = _aserv.multiple_extend_request_args(
@@ -205,7 +196,7 @@ def session_change():
 
     logger.debug('session_change:request_args {}'.format(request_args))
 
-    _info = current_app.rph.init_authorization(_rp, request_args=request_args)
+    _info = _client.init_authorization(request_args=request_args)
     logger.debug('session_change:authorization request: {}'.format(_info['url']))
     return redirect(_info['url'], 303)
 
@@ -213,40 +204,41 @@ def session_change():
 # post_logout_redirect_uri
 @oidc_rp_views.route('/session_logout/<op_hash>')
 def session_logout(op_hash):
-    _rp = get_rp(op_hash)
+    _client = get_client(op_hash)
     logger.debug('post_logout')
-    return "Post logout from {}".format(_rp.service_context.get('issuer'))
+    return "Post logout from {}".format(_client.service_context.get('issuer'))
 
 
 # RP initiated logout
 @oidc_rp_views.route('/logout')
 def logout():
     logger.debug('logout')
-    _info = current_app.rph.logout(state=session['state'])
-    logger.debug('logout redirect to "{}"'.format(_info['url']))
-    return redirect(_info['url'], 303)
+    _client = current_app.rph.get_client_from_session_key(session['state'])
+    _request_args = _client.logout(state=session['state'])
+    logger.debug('logout redirect to "{}"'.format(_request_args['url']))
+    return redirect(_request_args['url'], 303)
 
 
 @oidc_rp_views.route('/bc_logout/<op_hash>', methods=['GET', 'POST'])
 def backchannel_logout(op_hash):
-    _rp = get_rp(op_hash)
+    _client = get_client(op_hash)
     try:
-        _state = oidcrp.backchannel_logout(request.data, _rp)
+        _state = oidc.backchannel_logout(request.data, _client)
     except Exception as err:
         logger.error('Exception: {}'.format(err))
         return 'System error!', 400
     else:
-        _rp.session_interface.remove_state(_state)
+        _client.service_context.state.remove_state(_state)
         return "OK"
 
 
 @oidc_rp_views.route('/fc_logout/<op_hash>', methods=['GET', 'POST'])
 def frontchannel_logout(op_hash):
-    _rp = get_rp(op_hash)
+    _client = get_client(op_hash)
     sid = request.args['sid']
     _iss = request.args['iss']
-    if _iss != _rp.service_context.get('issuer'):
+    if _iss != _client.service_context.get('issuer'):
         return 'Bad request', 400
-    _state = _rp.session_interface.get_state_by_sid(sid)
-    _rp.session_interface.remove_state(_state)
+    _state = _client.service_context.state.get_state_by_sid(sid)
+    _client.clear_session(_state)
     return "OK"
