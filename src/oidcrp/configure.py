@@ -4,7 +4,6 @@ from typing import Dict
 from typing import Optional
 
 from oidcmsg import add_base_path
-
 from oidcrp.logging import configure_logging
 from oidcrp.util import get_http_params
 from oidcrp.util import load_yaml_config

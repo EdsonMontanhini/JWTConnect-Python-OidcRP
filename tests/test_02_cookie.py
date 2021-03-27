@@ -2,13 +2,13 @@ import datetime
 from http.cookies import SimpleCookie
 
 import pytest
-from oidcrp.cookie import make_cookie
-
 from oidcservice.exception import ImproperlyConfigured
+
 from oidcrp.cookie import CookieDealer
 from oidcrp.cookie import InvalidCookieSign
 from oidcrp.cookie import cookie_parts
 from oidcrp.cookie import cookie_signature
+from oidcrp.cookie import make_cookie
 from oidcrp.cookie import parse_cookie
 from oidcrp.cookie import verify_cookie_signature
 

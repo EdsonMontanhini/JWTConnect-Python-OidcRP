@@ -73,6 +73,7 @@ def rp():
 
 
 def get_rp(op_hash):
+
     try:
         _iss = current_app.rph.hash2issuer[op_hash]
     except KeyError:

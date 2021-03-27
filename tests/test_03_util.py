@@ -1,15 +1,16 @@
-import pytest
-
 from http.cookiejar import FileCookieJar
 from http.cookiejar import http2time
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs
 from urllib.parse import urlparse
 
-from oidcrp.util import get_deserialization_method, URL_ENCODED
+import pytest
 from oidcservice.exception import WrongContentType
 
 from oidcrp import util
+from oidcrp.util import URL_ENCODED
+from oidcrp.util import add_path
+from oidcrp.util import get_deserialization_method
 
 __author__ = 'Roland Hedberg'
 
@@ -175,3 +176,10 @@ def test_verify_no_content_type():
     resp = FakeResponse('text/html')
     del resp.headers['content-type']
     assert util.verify_header(resp, 'txt') == 'txt'
+
+def test_add_path():
+    assert add_path('https://example.com/', '/usr') == 'https://example.com/usr'
+    assert add_path('https://example.com/', 'usr') == 'https://example.com/usr'
+    assert add_path('https://example.com', '/usr') == 'https://example.com/usr'
+    assert add_path('https://example.com', 'usr') == 'https://example.com/usr'
+

@@ -1,12 +1,12 @@
+from oidcservice.oauth2 import access_token
+from oidcservice.oidc import userinfo
+
 from oidcmsg import oauth2
-from oidcmsg.message import Message
 from oidcmsg.message import SINGLE_OPTIONAL_JSON
 from oidcmsg.message import SINGLE_OPTIONAL_STRING
 from oidcmsg.message import SINGLE_REQUIRED_INT
 from oidcmsg.message import SINGLE_REQUIRED_STRING
-
-from oidcservice.oauth2 import access_token
-from oidcservice.oidc import userinfo
+from oidcmsg.message import Message
 
 
 class AccessTokenResponse(Message):

@@ -66,8 +66,8 @@ setup(
         "Programming Language :: Python :: 3.9",
         "Topic :: Software Development :: Libraries :: Python Modules"],
     install_requires=[
-        'oidcservice>=1.1.0',
-        'oidcmsg>=1.1.3',
+        'oidcservice>=1.2.0',
+        'oidcmsg>=1.2.0',
         'pyyaml',
         'responses'
     ],

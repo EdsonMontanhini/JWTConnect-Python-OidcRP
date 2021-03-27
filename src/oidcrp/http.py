@@ -1,11 +1,10 @@
 import copy
 import logging
-import requests
-
 from http.cookiejar import FileCookieJar
 from http.cookies import CookieError
 from http.cookies import SimpleCookie
 
+import requests
 from oidcservice import sanitize
 from oidcservice.exception import NonFatalException
 
@@ -30,7 +29,6 @@ class HTTPLib(object):
 
         self.cookiejar = FileCookieJar()
 
-        self.events = None
         self.req_callback = None
 
     def _cookies(self):
@@ -102,9 +100,6 @@ class HTTPLib(object):
                 "http_request failed: %s, url: %s, htargs: %s, method: %s" % (
                     err, url, sanitize(_kwargs), method))
             raise
-
-        if self.events is not None:
-            self.events.store('HTTP response', r, ref=url)
 
         self.set_cookie(r)
 

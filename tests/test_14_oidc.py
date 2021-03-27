@@ -3,19 +3,17 @@ import os
 import sys
 import time
 
-import pytest
-import responses
 from cryptojwt.jwk.rsa import import_private_rsa_key_from_file
 from cryptojwt.key_bundle import KeyBundle
-from oidcmsg.oauth2 import AccessTokenRequest
 from oidcmsg.oauth2 import AccessTokenResponse
-from oidcmsg.oauth2 import AuthorizationRequest
 from oidcmsg.oauth2 import AuthorizationResponse
-from oidcmsg.oauth2 import RefreshAccessTokenRequest
 from oidcmsg.oidc import IdToken
 from oidcmsg.oidc import OpenIDSchema
 from oidcmsg.time_util import utc_time_sans_frac
+import pytest
+import responses
 
+from oidcrp.oauth2 import Client
 from oidcrp.oidc import RP
 
 sys.path.insert(0, '.')
@@ -32,127 +30,137 @@ IDTOKEN = IdToken(iss="http://oidc.example.org/", sub="sub",
                   nonce="N0nce",
                   iat=time.time())
 
+HTTPC_PARAMS = {
+    "verify": False
+}
 
-def access_token_callback(endpoint):
-    if endpoint:
-        return 'access_token'
+KEYDEFS = [
+    {
+        "type": "RSA",
+        "key": '',
+        "use": ["sig"],
+    },
+    {
+        "type": "EC",
+        "crv": "P-256",
+        "use": ["sig"]
+    }
+]
 
+RP_KEYS = {
+    'private_path': 'private/jwks.json',
+    'key_defs': KEYDEFS,
+    'public_path': 'static/jwks.json',
+    # this will create the jwks files if they are absent
+    'read_only': False
+}
+
+CLIENT_PREFERENCES = {
+    "application_name": "rphandler",
+    "application_type": "web",
+    "contacts": ["ops@example.com"],
+    "response_type": "code",
+    "scope": ["profile", "email", "address", "phone"],
+    "token_endpoint_auth_method": "client_secret_basic"
+}
+
+SERVICES = {
+    "authorization": {
+        "class": "oidcservice.oidc.authorization.Authorization",
+        "kwargs": {}
+    },
+    "accesstoken": {
+        "class": "oidcservice.oidc.access_token.AccessToken",
+        "kwargs": {}
+    },
+    "userinfo": {
+        "class": "oidcservice.oidc.user_info.UserInfo",
+        "kwargs": {}
+    }
+}
+
+BASE_URL = "https://rp.example.org"
+
+# default services
+STATIC_CLIENT = {
+    'redirect_uris': ['https://example.com/cli/authz_cb'],
+    'client_id': 'client_1',
+    'client_secret': 'abcdefghijklmnop',
+    "behaviour": CLIENT_PREFERENCES,
+    "keys": RP_KEYS,
+    "provider_info": {
+        "issuer": "https://op.example.com/",
+        "authorization_endpoint": "https://op.example.com/auth",
+        "token_endpoint": "https://op.example.com/token",
+        "userinfo_endpoint": "https://op.example.com/user",
+        "jwks_uri": "https://op.example.com/jwks",
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"]
+    },
+    "add_ons": {
+        "pkce": {
+            "function": "oidcservice.oidc.add_on.pkce.add_pkce_support",
+            "kwargs": {
+                "code_challenge_length": 64,
+                "code_challenge_method": "S256"
+            }
+        }
+    }
+}
+
+
+class MockResponse():
+    def __init__(self, status_code, text, headers=None):
+        self.status_code = status_code
+        self.text = text
+        self.headers = headers or {}
+        self.url = ''
 
 
 class TestClient(object):
     @pytest.fixture(autouse=True)
     def create_client(self):
-        self.redirect_uri = "http://example.com/redirect"
-        conf = {
-            'redirect_uris': ['https://example.com/cli/authz_cb'],
-            'client_id': 'client_1',
-            'client_secret': 'abcdefghijklmnop',
-        }
-        self.client = RP(config=conf)
+        # self.redirect_uri = "http://example.com/redirect"
+        self.client = RP(config=STATIC_CLIENT, httpc_params=HTTPC_PARAMS, base_url=BASE_URL)
 
-    def test_construct_authorization_request(self):
+    def test_sequence(self):
+        # client does the request
         req_args = {
-            'state': 'ABCDE',
             'redirect_uri': 'https://example.com/auth_cb',
-            'response_type': ['code']
+            'response_type': "code"
         }
 
-        self.client.session_interface.create_state('issuer', 'ABCDE')
+        req_info = self.client.init_authorization(req_args)
+        _state = req_info["request"]["state"]
 
-        msg = self.client.service['authorization'].construct(
-            request_args=req_args)
-        assert isinstance(msg, AuthorizationRequest)
-        assert msg['redirect_uri'] == 'https://example.com/auth_cb'
+        auth_response = AuthorizationResponse(code='access_code', state=_state)
 
-    def test_construct_accesstoken_request(self):
-        auth_request = AuthorizationRequest(
-            redirect_uri='https://example.com/cli/authz_cb',
-            state='ABCDE'
-        )
+        self.client.finalize_auth(auth_response.to_dict(), "https://op.example.com/")
 
-        self.client.session_interface.store_item(auth_request,
-                                                 'auth_request', 'ABCDE')
+        url = self.client.service_context.provider_info["token_endpoint"]
 
-        auth_response = AuthorizationResponse(code='access_code')
-
-        self.client.session_interface.store_item(auth_response,
-                                                 'auth_response', 'ABCDE')
-
-        # Bind access code to state
-        req_args = {}
-        msg = self.client.service['accesstoken'].construct(
-            request_args=req_args, state='ABCDE')
-        assert isinstance(msg, AccessTokenRequest)
-        assert msg.to_dict() == {
-            'client_id': 'client_1', 'code': 'access_code',
-            'client_secret': 'abcdefghijklmnop',
-            'grant_type': 'authorization_code',
-            'redirect_uri': 'https://example.com/cli/authz_cb',
-            'state': 'ABCDE'
-        }
-
-    def test_construct_refresh_token_request(self):
-        self.client.session_interface.create_state('issuer', 'ABCDE')
-
-        auth_request = AuthorizationRequest(
-            redirect_uri='https://example.com/cli/authz_cb',
-            state='state'
-        )
-
-        self.client.session_interface.store_item(auth_request,
-                                                 'auth_request', 'ABCDE')
-
-        auth_response = AuthorizationResponse(code='access_code')
-        self.client.session_interface.store_item(auth_response,
-                                                 'auth_response', 'ABCDE')
-
+        # Access token
         token_response = AccessTokenResponse(refresh_token="refresh_with_me",
-                                             access_token="access")
-        self.client.session_interface.store_item(token_response,
-                                                 'token_response', 'ABCDE')
+                                             access_token="access_token",
+                                             token_type="Bearer")
 
-        req_args = {}
-        msg = self.client.service['refresh_token'].construct(
-            request_args=req_args, state='ABCDE')
-        assert isinstance(msg, RefreshAccessTokenRequest)
-        assert msg.to_dict() == {
-            'client_id': 'client_1',
-            'client_secret': 'abcdefghijklmnop',
-            'grant_type': 'refresh_token',
-            'refresh_token': 'refresh_with_me'
-        }
+        with responses.RequestsMock() as rsps:
+            rsps.add("POST", url,
+                     body=token_response.to_json(),
+                     adding_headers={"Content-Type": "application/json"}, status=200)
 
-    def test_do_userinfo_request_init(self):
-        self.client.session_interface.create_state('issuer', 'ABCDE')
+            self.client.get_access_token(_state)
 
-        auth_request = AuthorizationRequest(
-            redirect_uri='https://example.com/cli/authz_cb',
-            state='state'
-        )
+        session_state = self.client.service_context.state.get_state(_state)
+        assert set(session_state.keys()) == {"iss", "pkce", "auth_request", "auth_response",
+                                                'token_response'}
 
-        self.client.session_interface.store_item(auth_request,
-                                                 'auth_request', 'ABCDE')
+        resp = self.client.service_context.state.get_item(AccessTokenResponse, "token_response",
+                                                           _state)
+        assert resp["access_token"] == "access_token"
 
-        auth_response = AuthorizationResponse(code='access_code')
-        self.client.session_interface.store_item(auth_response,
-                                                 'auth_response', 'ABCDE')
-
-        token_response = AccessTokenResponse(refresh_token="refresh_with_me",
-                                             access_token="access")
-        self.client.session_interface.store_item(token_response,
-                                                 'token_response', 'ABCDE')
-
-        _srv = self.client.service['userinfo']
-        _srv.endpoint = "https://example.com/userinfo"
-        _info = _srv.get_request_parameters(state='ABCDE')
-        assert _info
-        assert _info['headers'] == {'Authorization': 'Bearer access'}
-        assert _info['url'] == 'https://example.com/userinfo'
-
-    def test_fetch_distributed_claims_1(self):
+        url = self.client.service_context.provider_info["userinfo_endpoint"]
         _url = "https://example.com/claims.json"
-        # split the example in 5.6.2.2 into two
-        uinfo = OpenIDSchema(**{
+        userinfo_response = OpenIDSchema(**{
             "sub": 'jane_doe',
             "name": "Jane Doe",
             "given_name": "Jane",
@@ -171,7 +179,18 @@ class TestClient(object):
             }
         })
 
-        # Wrong set of claims. Actually extra claim
+        with responses.RequestsMock() as rsps:
+            rsps.add("GET", url,
+                     body=userinfo_response.to_json(),
+                     adding_headers={"Content-Type": "application/json"}, status=200)
+
+            user = self.client.get_user_info(_state)
+
+        assert user
+        assert user["name"] == "Jane Doe"
+
+
+        # Remote set of claims
         _info = {
             "shipping_address": {
                 "street_address": "1234 Hollywood Blvd.",
@@ -188,74 +207,22 @@ class TestClient(object):
             rsps.add("GET", _url, body=json.dumps(_info),
                      adding_headers={"Content-Type": "application/json"}, status=200)
 
-            res = self.client.fetch_distributed_claims(uinfo)
+            res = self.client.fetch_distributed_claims(user)
 
         assert 'payment_info' in res
         assert 'shipping_address' in res
         assert 'phone_number' not in res
 
-    def test_fetch_distributed_claims_2(self):
-        _url = "https://example.com/claims.json"
 
-        uinfo = OpenIDSchema(**{
-            "sub": 'jane_doe',
-            "name": "Jane Doe",
-            "given_name": "Jane",
-            "family_name": "Doe",
-            "email": "janedoe@example.com",
-            "birthdate": "0000-03-22",
-            "eye_color": "blue",
-            "_claim_names": {
-                "credit_score": "src2"
-            },
-            "_claim_sources": {
-                "src2": {
-                    "endpoint": _url,
-                    "access_token": "ksj3n283dke"
-                }
-            }
-        })
+def test_load_registration_response():
+    conf = {
+        'redirect_uris': ['https://example.com/cli/authz_cb'],
+        'client_id': 'client_1',
+        'client_secret': 'abcdefghijklmnop',
+        'registration_response': {'issuer': 'https://example.com'}
+    }
+    client = RP(base_url="https://example.com/cli",config=conf)
 
-        _claims = {
-            "credit_score": 650
-        }
-
-        with responses.RequestsMock() as rsps:
-            rsps.add("GET", _url, body=json.dumps(_claims),
-                     adding_headers={"Content-Type": "application/json"}, status=200)
-
-            res = self.client.fetch_distributed_claims(uinfo)
-
-        assert 'credit_score' in res
-
-    def test_fetch_distributed_claims_3(self, httpserver):
-        _url = "https://example.com/claims.json"
-
-        uinfo = OpenIDSchema(**{
-            "sub": 'jane_doe',
-            "name": "Jane Doe",
-            "given_name": "Jane",
-            "family_name": "Doe",
-            "email": "janedoe@example.com",
-            "birthdate": "0000-03-22",
-            "eye_color": "blue",
-            "_claim_names": {
-                "credit_score": "src2"
-            },
-            "_claim_sources": {
-                "src2": {
-                    "endpoint": _url,
-                }
-            }
-        })
-
-        _claims = {"credit_score": 650}
-
-        with responses.RequestsMock() as rsps:
-            rsps.add("GET", _url, body=json.dumps(_claims),
-                     adding_headers={"Content-Type": "application/json"}, status=200)
-
-            res = self.client.fetch_distributed_claims(
-                uinfo, callback=access_token_callback)
-
-        assert 'credit_score' in res
+    # test static
+    client.load_registration_response()
+    assert True

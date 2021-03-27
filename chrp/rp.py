@@ -7,7 +7,7 @@ import sys
 
 from cryptojwt.key_jar import init_key_jar
 
-from oidcrp import RPHandler
+from oidcrp.rp_handler import RPHandler
 
 logger = logging.getLogger("")
 LOGFILE_NAME = 'farp.log'
@@ -88,7 +88,7 @@ if __name__ == '__main__':
     else:
         _verify_ssl = True
 
-    rph = RPHandler(_base_url, config.CLIENTS, services=config.SERVICES,
+    rph = RPHandler(_base_url, config.CLIENTS, service_configs=config.SERVICES,
                     hash_seed="BabyHoldOn", keyjar=_kj, jwks_path=config.PUBLIC_JWKS_PATH,
                     verify_ssl=_verify_ssl)
 

@@ -5,18 +5,16 @@ import logging
 import os
 import sys
 import time
-
 from http.cookies import SimpleCookie
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
-from cryptojwt.utils import as_bytes
-from cryptojwt.utils import as_unicode
 from cryptojwt.jwe.exception import JWEException
 from cryptojwt.jwe.utils import split_ctx_and_tag
-
+from cryptojwt.utils import as_bytes
+from cryptojwt.utils import as_unicode
 from oidcservice import rndstr
 from oidcservice.exception import ImproperlyConfigured
+
 from oidcmsg import time_util
 
 __author__ = 'Roland Hedberg'

@@ -2,19 +2,14 @@ import os
 import sys
 import time
 
-import pytest
 from cryptojwt.jwk.rsa import import_private_rsa_key_from_file
 from cryptojwt.key_bundle import KeyBundle
-from oidcmsg.oauth2 import AccessTokenRequest
 from oidcmsg.oauth2 import AccessTokenResponse
-from oidcmsg.oauth2 import AuthorizationRequest
 from oidcmsg.oauth2 import AuthorizationResponse
-from oidcmsg.oauth2 import RefreshAccessTokenRequest
-from oidcmsg.oauth2 import ResponseMessage
 from oidcmsg.oidc import IdToken
 from oidcmsg.time_util import utc_time_sans_frac
-from oidcservice.exception import OidcServiceError
-from oidcservice.exception import ParseError
+import pytest
+import responses
 
 from oidcrp.oauth2 import Client
 
@@ -32,6 +27,78 @@ IDTOKEN = IdToken(iss="http://oidc.example.org/", sub="sub",
                   nonce="N0nce",
                   iat=time.time())
 
+HTTPC_PARAMS = {
+    "verify": False
+}
+
+KEYDEFS = [
+    {
+        "type": "RSA",
+        "key": '',
+        "use": ["sig"],
+    },
+    {
+        "type": "EC",
+        "crv": "P-256",
+        "use": ["sig"]
+    }
+]
+
+RP_KEYS = {
+    'private_path': 'private/jwks.json',
+    'key_defs': KEYDEFS,
+    'public_path': 'static/jwks.json',
+    # this will create the jwks files if they are absent
+    'read_only': False
+}
+
+CLIENT_PREFERENCES = {
+    "application_name": "rphandler",
+    "application_type": "web",
+    "contacts": ["ops@example.com"],
+    "response_type": "code",
+    "scope": ["profile", "email", "address", "phone"],
+    "token_endpoint_auth_method": "client_secret_basic"
+}
+
+SERVICES = {
+    "authorization": {
+        "class": "oidcservice.oauth2.authorization.Authorization",
+        "kwargs": {}
+    },
+    "accesstoken": {
+        "class": "oidcservice.oauth2.access_token.AccessToken",
+        "kwargs": {}
+    }
+}
+
+BASE_URL = "https://rp.example.org"
+
+# default services
+STATIC_CLIENT = {
+    'redirect_uris': ['https://example.com/cli/authz_cb'],
+    'client_id': 'client_1',
+    'client_secret': 'abcdefghijklmnop',
+    "behaviour": CLIENT_PREFERENCES,
+    "keys": RP_KEYS,
+    "provider_info": {
+        "issuer": "https://op.example.com/",
+        "authorization_endpoint": "https://op.example.com/auth",
+        "token_endpoint": "https://op.example.com/token",
+        "userinfo_endpoint": "https://op.example.com/user",
+        "jwks_uri": "https://op.example.com/jwks",
+        "token_endpoint_auth_methods_supported": ["client_secret_post", "client_secret_basic"]
+    },
+    "add_ons": {
+        "pkce": {
+            "function": "oidcservice.oidc.add_on.pkce.add_pkce_support",
+            "kwargs": {
+                "code_challenge_length": 64,
+                "code_challenge_method": "S256"
+            }
+        }
+    }
+}
 
 
 class MockResponse():
@@ -45,132 +112,70 @@ class MockResponse():
 class TestClient(object):
     @pytest.fixture(autouse=True)
     def create_client(self):
-        self.redirect_uri = "http://example.com/redirect"
-        conf = {
-            'issuer': 'https://op.example.com',
-            'redirect_uris': ['https://example.com/cli/authz_cb'],
-            'client_id': 'client_1',
-            'client_secret': 'abcdefghijklmnop',
-            'db_conf': {
-                'keyjar': {
-                    'handler': 'oidcmsg.storage.abfile.LabeledAbstractFileSystem',
-                    'fdir': 'db/keyjar',
-                    'key_conv': 'oidcmsg.storage.converter.QPKey',
-                    'value_conv': 'cryptojwt.serialize.item.KeyIssuer',
-                    'label': 'keyjar'
-                },
-                'default': {
-                    'handler': 'oidcmsg.storage.abfile.AbstractFileSystem',
-                    'fdir': 'db',
-                    'key_conv': 'oidcmsg.storage.converter.QPKey',
-                    'value_conv': 'oidcmsg.storage.converter.JSON'
-                }
-            }
-        }
-        self.client = Client(config=conf)
+        # self.redirect_uri = "http://example.com/redirect"
+        self.client1 = Client(config=STATIC_CLIENT, httpc_params=HTTPC_PARAMS, base_url=BASE_URL)
+        self.client2 = Client(config=STATIC_CLIENT, httpc_params=HTTPC_PARAMS, base_url=BASE_URL)
 
-    def test_construct_authorization_request(self):
+    def test_sequence(self):
+        # client1 does the request
         req_args = {
-            'state': 'ABCDE',
             'redirect_uri': 'https://example.com/auth_cb',
-            'response_type': ['code']
+            'response_type': "code"
         }
 
-        self.client.session_interface.create_state('issuer', key='ABCDE')
-        msg = self.client.service['authorization'].construct(
-            request_args=req_args)
-        assert isinstance(msg, AuthorizationRequest)
-        assert msg['client_id'] == 'client_1'
-        assert msg['redirect_uri'] == 'https://example.com/auth_cb'
+        req_info = self.client1.init_authorization(req_args)
+        _state = req_info["request"]["state"]
 
-    def test_construct_accesstoken_request(self):
-        # Bind access code to state
-        req_args = {}
+        _service_context_state = self.client1.service_context.dump()
+        self.client2.service_context.load(_service_context_state)
 
-        self.client.session_interface.create_state('issuer', 'ABCDE')
+        auth_response = AuthorizationResponse(code='access_code', state=_state)
 
-        auth_request = AuthorizationRequest(
-            redirect_uri='https://example.com/cli/authz_cb',
-            state='ABCDE'
-        )
+        self.client2.finalize_auth(auth_response.to_dict(), "https://op.example.com/")
 
-        self.client.session_interface.store_item(auth_request, 'auth_request',
-                                                 'ABCDE')
+        # synchronize the two instances
+        _service_context_state = self.client2.service_context.dump()
+        self.client1.service_context.load(_service_context_state)
 
-        auth_response = AuthorizationResponse(code='access_code')
+        session_state_I = self.client1.service_context.state.get_state(_state)
+        assert set(session_state_I.keys()) == {"iss", "pkce", "auth_request", "auth_response"}
 
-        self.client.session_interface.store_item(auth_response,
-                                                 'auth_response', 'ABCDE')
+        session_state_II = self.client2.service_context.state.get_state(_state)
+        assert set(session_state_II.keys()) == {"iss", "pkce", "auth_request", "auth_response"}
 
-        msg = self.client.service['accesstoken'].construct(
-            request_args=req_args, state='ABCDE')
+        url = self.client1.service_context.provider_info["token_endpoint"]
 
-        assert isinstance(msg, AccessTokenRequest)
-        assert msg.to_dict() == {
-            'client_id': 'client_1',
-            'code': 'access_code',
-            'client_secret': 'abcdefghijklmnop',
-            'grant_type': 'authorization_code',
-            'redirect_uri':
-                'https://example.com/cli/authz_cb',
-            'state': 'ABCDE'
-        }
-
-    def test_construct_refresh_token_request(self):
-        self.client.session_interface.create_state('issuer', 'ABCDE')
-
-        auth_request = AuthorizationRequest(
-            redirect_uri='https://example.com/cli/authz_cb',
-            state='state'
-        )
-
-        self.client.session_interface.store_item(auth_request, 'auth_request',
-                                                 'ABCDE')
-
-        auth_response = AuthorizationResponse(code='access_code')
-
-        self.client.session_interface.store_item(auth_response,
-                                                 'auth_response', 'ABCDE')
-
+        # Access token
         token_response = AccessTokenResponse(refresh_token="refresh_with_me",
-                                             access_token="access")
+                                             access_token="access_token",
+                                             token_type="Bearer")
 
-        self.client.session_interface.store_item(token_response,
-                                                 'token_response', 'ABCDE')
+        with responses.RequestsMock() as rsps:
+            rsps.add("POST", url,
+                     body=token_response.to_json(),
+                     adding_headers={"Content-Type": "application/json"}, status=200)
 
-        req_args = {}
-        msg = self.client.service['refresh_token'].construct(
-            request_args=req_args, state='ABCDE')
-        assert isinstance(msg, RefreshAccessTokenRequest)
-        assert msg.to_dict() == {
-            'client_id': 'client_1',
-            'client_secret': 'abcdefghijklmnop',
-            'grant_type': 'refresh_token',
-            'refresh_token': 'refresh_with_me'
-        }
+            self.client1.get_access_token(_state)
 
-    def test_error_response(self):
-        err = ResponseMessage(error='Illegal')
-        http_resp = MockResponse(400, err.to_urlencoded())
-        resp = self.client.parse_request_response(
-            self.client.service['authorization'], http_resp)
+        # Update the 2nd client
+        _service_context_state = self.client1.service_context.dump()
+        self.client2.service_context.load(_service_context_state)
 
-        assert resp['error'] == 'Illegal'
-        assert resp['status_code'] == 400
+        session_state_II = self.client2.service_context.state.get_state(_state)
+        assert set(session_state_II.keys()) == {"iss", "pkce", "auth_request", "auth_response",
+                                                'token_response'}
 
-    def test_error_response_500(self):
-        err = ResponseMessage(error='Illegal')
-        http_resp = MockResponse(500, err.to_urlencoded())
-        with pytest.raises(ParseError):
-            self.client.parse_request_response(
-                self.client.service['authorization'], http_resp)
+        resp = self.client2.service_context.state.get_item(AccessTokenResponse, "token_response",
+                                                           _state)
+        assert resp["access_token"] == "access_token"
 
-    def test_error_response_2(self):
-        err = ResponseMessage(error='Illegal')
-        http_resp = MockResponse(
-            400, err.to_json(),
-            headers={'content-type': 'application/x-www-form-urlencoded'})
 
-        with pytest.raises(OidcServiceError):
-            self.client.parse_request_response(
-                self.client.service['authorization'], http_resp)
+def test_dump_load():
+    client1 = Client(config=STATIC_CLIENT, httpc_params=HTTPC_PARAMS, base_url=BASE_URL)
+    blank_client = Client(base_url="")
+
+    _client_state = client1.dump()
+    blank_client.load(_client_state)
+
+    assert blank_client.client_id == STATIC_CLIENT["client_id"]
+    assert blank_client.issuer == STATIC_CLIENT["provider_info"]["issuer"]

@@ -5,7 +5,7 @@ from cryptojwt import KeyJar
 from cryptojwt.key_jar import init_key_jar
 from flask.app import Flask
 
-from oidcrp import RPHandler
+from oidcrp.rp_handler import RPHandler
 from oidcrp.configure import Configuration
 
 dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -24,7 +24,7 @@ def init_oidc_rp_handler(app):
         _path = ''
     _kj.httpc_params = _rp_conf.httpc_params
 
-    rph = RPHandler(_rp_conf.base_url, _rp_conf.clients, services=_rp_conf.services,
+    rph = RPHandler(_rp_conf.base_url, _rp_conf.clients, service_configs=_rp_conf.services,
                     hash_seed=_rp_conf.hash_seed, keyjar=_kj, jwks_path=_path,
                     httpc_params=_rp_conf.httpc_params)
 

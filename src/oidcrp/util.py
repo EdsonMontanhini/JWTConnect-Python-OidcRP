@@ -1,3 +1,5 @@
+from http.cookiejar import Cookie
+from http.cookiejar import http2time
 import importlib
 import io
 import json
@@ -5,14 +7,13 @@ import logging
 import os
 import ssl
 import sys
-from http.cookiejar import Cookie
-from http.cookiejar import http2time
 
-import yaml
+from oidcmsg.oidc import OpenIDSchema
 from oidcservice import sanitize
 from oidcservice.exception import TimeFormatError
 from oidcservice.exception import WrongContentType
 from oidcservice.util import importer
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -345,7 +346,7 @@ def set_param(instance, config, param, **kwargs):
             setattr(instance, lc_param, res)
 
 
-def create_context(dir_path, config, **kwargs):
+def create_ssl_context(dir_path, config, **kwargs):
     _fname = lower_or_upper(config, "server_cert")
     if _fname:
         if _fname.startswith("/"):
@@ -402,3 +403,30 @@ def get_http_params(config):
             params['cert'] = _cert
 
     return params
+
+
+def add_path(url, path):
+    if url.endswith('/'):
+        if path.startswith('/'):
+            return '{}{}'.format(url, path[1:])
+        else:
+            return '{}{}'.format(url, path)
+    else:
+        if path.startswith('/'):
+            return '{}{}'.format(url, path)
+        else:
+            return '{}/{}'.format(url, path)
+
+
+def userinfo_in_id_token(id_token):
+    """
+    Given an verified ID token return all the claims that may been user
+    information.
+
+    :param id_token: An :py:class:`oidcmsg.oidc.IDToken` instance
+    :return: A dictionary with user information
+    """
+    res = dict([(k, id_token[k]) for k in OpenIDSchema.c_param.keys() if
+                k in id_token])
+    res.update(id_token.extra())
+    return res
